@@ -57,6 +57,20 @@
             font-size: 14px;
         }
 
+        /* Sync Box */
+        .sync-box {
+            background-color: rgba(16, 185, 129, 0.1);
+            border: 1px dashed var(--color-up);
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+
         /* Summary Cards */
         .summary-grid {
             display: grid;
@@ -263,13 +277,27 @@
     <header>
         <div>
             <h1>多平台美股持仓投资看板</h1>
-            <div class="text-muted" id="update-time">数据存储于本地浏览器 LocalStorage (全静态安全部署)</div>
+            <div class="text-muted" id="update-time">数据全静态保存在本地浏览器 LocalStorage 中</div>
         </div>
         <div>
             <button class="btn-submit" onclick="exportData()" style="background-color: #334155; margin-right: 8px;">导出备份</button>
             <button class="btn-submit" onclick="importData()" style="background-color: #334155;">导入备份</button>
         </div>
     </header>
+
+    <!-- 自动化券商账单同步区域 -->
+    <div class="sync-box">
+        <div>
+            <div style="font-weight: 600; font-size: 15px; color: var(--text-main);">📊 智能后台报表一键同步</div>
+            <div class="text-muted" style="font-size: 12px; margin-top: 2px;">直接上传嘉信(Individual-Positions...) 或 盈透(Uxxxx_xxxx.csv) 原始报告文件，自动精确识别并覆盖更新对应平台。</div>
+        </div>
+        <div>
+            <button class="btn-submit" onclick="document.getElementById('broker-csv-input').click()" style="background-color: var(--color-up);">
+                📥 选择并同步 CSV 报告
+            </button>
+            <input type="file" id="broker-csv-input" accept=".csv" multiple style="display: none;" onchange="importBrokerCsv(event)">
+        </div>
+    </div>
 
     <!-- 顶层资产总览 -->
     <div class="summary-grid">
@@ -322,7 +350,7 @@
                     <th>公司名称</th>
                     <th>持股数量</th>
                     <th>成本均价</th>
-                    <th>当前现价</th>
+                    <th>收盘现价</th>
                     <th>当前市值</th>
                     <th>持仓总盈亏</th>
                     <th>盈亏比例</th>
@@ -335,9 +363,9 @@
         </table>
     </div>
 
-    <!-- 快捷新增/修改持仓表单 -->
+    <!-- 快捷手工调整持仓表单 -->
     <div class="form-section">
-        <h3>新增 / 更新持仓条目</h3>
+        <h3>手动新增 / 调差微调持仓 (可配合富途收盘价微调)</h3>
         <form id="position-form" onsubmit="handleFormSubmit(event)">
             <div class="form-grid">
                 <div class="form-group">
@@ -354,7 +382,7 @@
                 </div>
                 <div class="form-group">
                     <label for="name">名称/备注</label>
-                    <input type="text" id="name" placeholder="如: NVIDIA 2X Long">
+                    <input type="text" id="name" placeholder="可以留空自动用代码充当">
                 </div>
                 <div class="form-group">
                     <label for="shares">持股数量</label>
@@ -365,11 +393,11 @@
                     <input type="number" id="cost" step="any" placeholder="0.00" required>
                 </div>
                 <div class="form-group">
-                    <label for="price">收盘现价 (USD)</label>
+                    <label for="price">当前现价 (USD)</label>
                     <input type="number" id="price" step="any" placeholder="0.00" required>
                 </div>
                 <div class="form-group">
-                    <button type="submit" class="btn-submit">保存持仓</button>
+                    <button type="submit" class="btn-submit">保存记录</button>
                 </div>
             </div>
         </form>
@@ -377,11 +405,10 @@
 </div>
 
 <script>
-    // 初始化默认数据 (贴合用户观察组合)
+    // 初始化默认模拟展示数据
     const defaultData = [
-        { id: "1", platform: "ibkr", symbol: "NVDL", name: "NVDA 两倍做多", shares: 150, cost: 62.50, price: 68.40 },
-        { id: "2", platform: "schwab", symbol: "UVXY", name: "两倍做多VIX短期期货", shares: 300, cost: 11.20, price: 9.80 },
-        { id: "3", platform: "firstrade", symbol: "VOO", name: "标普500ETF", shares: 20, cost: 480.00, price: 510.20 }
+        { id: "1", platform: "ibkr", symbol: "AMDL", name: "AMDL", shares: 1, cost: 5.13, price: 71.13 },
+        { id: "2", platform: "schwab", symbol: "EOSE", name: "EOS ENERGY ENTERPRISES", shares: 145, cost: 12.55, price: 9.29 }
     ];
 
     let portfolio = JSON.parse(localStorage.getItem('my_portfolio_data')) || defaultData;
@@ -408,14 +435,13 @@
         const cost = parseFloat(document.getElementById('cost').value);
         const price = parseFloat(document.getElementById('price').value);
 
-        // 检查是否存在同平台同代码，存在则更新，不存在则新增
         const existingIndex = portfolio.findIndex(item => item.platform === platform && item.symbol === symbol);
         
         if (existingIndex > -1) {
             portfolio[existingIndex] = { ...portfolio[existingIndex], name, shares, cost, price };
         } else {
             portfolio.push({
-                id: Date.now().toString(),
+                id: 'manual_' + Date.now().toString(),
                 platform, symbol, name, shares, cost, price
             });
         }
@@ -439,11 +465,151 @@
         return (num >= 0 ? '+' : '') + num.toFixed(2) + '%';
     }
 
+    // 通用纯JS高效CSV单行解析器（支持双引号包裹逗号）
+    function parseCSVLine(text) {
+        let r = [""];
+        let inQuotes = false;
+        for (let i = 0; i < text.length; i++) {
+            let c = text[i];
+            if (c === '"') {
+                inQuotes = !inQuotes;
+            } else if (c === ',' && !inQuotes) {
+                r.push("");
+            } else {
+                r[r.length - 1] += c;
+            }
+        }
+        return r.map(v => v.trim().replace(/^"|"$/g, ''));
+    }
+
+    function cleanNum(val) {
+        if (!val) return 0;
+        let s = val.replace(/[$,%\s]/g, '');
+        let f = parseFloat(s);
+        return isNaN(f) ? 0 : f;
+    }
+
+    // 核心智能券商报表同步函数
+    function importBrokerCsv(e) {
+        const files = e.target.files;
+        if (!files.length) return;
+
+        let processedCount = 0;
+        let totalParsedIbkr = 0;
+        let totalParsedSchwab = 0;
+
+        let newIbkrPositions = [];
+        let newSchwabPositions = [];
+
+        Array.from(files).forEach(file => {
+            const reader = new FileReader();
+            reader.readAsText(file, 'UTF-8');
+            reader.onload = function(evt) {
+                const text = evt.target.result;
+                const lines = text.split(/\r?\n/);
+                
+                let isSchwab = false;
+                let isIbkr = false;
+
+                // 扫描前 5 行进行智能指纹识别
+                for (let i = 0; i < Math.min(lines.length, 5); i++) {
+                    if (lines[i].includes("Positions for account") || lines[i].includes('"Symbol","Description"')) {
+                        isSchwab = true;
+                        break;
+                    }
+                    if (lines[i].includes("未平仓持仓") || lines[i].includes("Open Positions")) {
+                        isIbkr = true;
+                        break;
+                    }
+                }
+
+                // 冗余扫描（针对IBKR前置指标较多的账单）
+                if (!isSchwab && !isIbkr) {
+                    for (let i = 0; i < Math.min(lines.length, 100); i++) {
+                        if (lines[i].startsWith("未平仓持仓") || lines[i].startsWith("Open Positions")) {
+                            isIbkr = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (isSchwab) {
+                    lines.forEach(line => {
+                        const fields = parseCSVLine(line);
+                        if (fields.length < 5) return;
+                        const symbol = fields[0].toUpperCase().trim();
+                        if (!symbol || symbol === "SYMBOL" || symbol.startsWith("POSITIONS FOR") || symbol === "POSITIONS TOTAL" || symbol === "CASH & CASH INVESTMENTS") return;
+                        
+                        const name = fields[1] || symbol;
+                        const shares = cleanNum(fields[2]);
+                        const price = cleanNum(fields[3]);
+                        const cost = cleanNum(fields[4]);
+
+                        if (shares > 0) {
+                            newSchwabPositions.push({
+                                id: 'schwab_' + symbol + '_' + Math.random(),
+                                platform: 'schwab',
+                                symbol, name, shares, cost, price
+                            });
+                            totalParsedSchwab++;
+                        }
+                    });
+                } else if (isIbkr) {
+                    lines.forEach(line => {
+                        const fields = parseCSVLine(line);
+                        if (fields.length < 12) return;
+                        // 精确捕获 盈透 的 '未平仓持仓 -> Data -> Summary' 数据行
+                        if ((fields[0] === "未平仓持仓" || fields[0] === "Open Positions") && fields[1] === "Data" && fields[2] === "Summary") {
+                            const symbol = fields[5].toUpperCase().trim();
+                            if (!symbol) return;
+                            const shares = cleanNum(fields[7]);
+                            const cost = cleanNum(fields[9]);
+                            const price = cleanNum(fields[11]);
+                            const name = symbol;
+
+                            if (shares !== 0) {
+                                newIbkrPositions.push({
+                                    id: 'ibkr_' + symbol + '_' + Math.random(),
+                                    platform: 'ibkr',
+                                    symbol, name, shares, cost, price
+                                });
+                                totalParsedIbkr++;
+                            }
+                        }
+                    });
+                }
+
+                processedCount++;
+                if (processedCount === files.length) {
+                    // 全量同步：只覆盖上传了报告的那个券商，保留其他平台的资产
+                    if (totalParsedSchwab > 0) {
+                        portfolio = portfolio.filter(item => item.platform !== 'schwab');
+                        portfolio = portfolio.concat(newSchwabPositions);
+                    }
+                    if (totalParsedIbkr > 0) {
+                        portfolio = portfolio.filter(item => item.platform !== 'ibkr');
+                        portfolio = portfolio.concat(newIbkrPositions);
+                    }
+
+                    if (totalParsedSchwab === 0 && totalParsedIbkr === 0) {
+                        alert("未能成功识别有效的券商持仓格式，请确保上传的是从官方导出的完整原始 CSV。");
+                    } else {
+                        let msg = "🎉 同步处理完成！\n";
+                        if (totalParsedSchwab > 0) msg += `• 嘉信理财 (Schwab)：成功同步 ${totalParsedSchwab} 个股票持仓\n`;
+                        if (totalParsedIbkr > 0) msg += `• 盈透证券 (IBKR)：成功同步 ${totalParsedIbkr} 个股票持仓\n`;
+                        alert(msg);
+                        saveData();
+                    }
+                    e.target.value = ''; // 重置文件输入口
+                }
+            };
+        });
+    }
+
     function render() {
         const tbody = document.getElementById('portfolio-table-body');
         tbody.innerHTML = '';
 
-        // 初始化计算变量
         let totals = {
             all: { marketValue: 0, costBasis: 0 },
             ibkr: { marketValue: 0, costBasis: 0 },
@@ -451,7 +617,6 @@
             firstrade: { marketValue: 0, costBasis: 0 }
         };
 
-        // 计算所有核心资产数据
         portfolio.forEach(item => {
             const p = item.platform;
             const itemMarketValue = item.shares * item.price;
@@ -466,13 +631,11 @@
             }
         });
 
-        // 渲染顶部看版看板
         updateCardUi('total', totals.all);
         updateCardUi('ibkr', totals.ibkr);
         updateCardUi('schwab', totals.schwab);
         updateCardUi('firstrade', totals.firstrade);
 
-        // 仓位比例条更新
         const totalVal = totals.all.marketValue;
         const allocBar = document.getElementById('alloc-bar');
         allocBar.innerHTML = '';
@@ -490,11 +653,10 @@
             });
         }
 
-        // 过滤并渲染表格
         const filteredData = portfolio.filter(item => currentFilter === 'all' || item.platform === currentFilter);
 
         if(filteredData.length === 0) {
-            tbody.innerHTML = `<tr><td colspan="10" style="text-align:center; color:var(--text-muted);">暂无持仓数据，请在下方添加</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="10" style="text-align:center; color:var(--text-muted); padding: 30px;">暂无该平台持仓数据。请直接点击上方按钮上传对应 CSV 文件一键同步。</td></tr>`;
             return;
         }
 
@@ -509,8 +671,8 @@
             tr.innerHTML = `
                 <td style="color: var(--color-${item.platform}); font-weight:bold;">${item.platform.toUpperCase()}</td>
                 <td style="font-weight:600;">${item.symbol}</td>
-                <td class="text-muted">${item.name}</td>
-                <td>${item.shares}</td>
+                <td class="text-muted" style="max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${item.name}">${item.name}</td>
+                <td>${item.shares.toLocaleString(undefined, {maximumFractionDigits: 4})}</td>
                 <td>${formatCurrency(item.cost)}</td>
                 <td>${formatCurrency(item.price)}</td>
                 <td style="font-weight:600;">${formatCurrency(marketValue)}</td>
@@ -534,7 +696,6 @@
         pnlEl.className = `card-pnl ${pnl >= 0 ? 'up' : 'down'}`;
     }
 
-    // 导入导出功能
     function exportData() {
         const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(portfolio, null, 2));
         const downloadAnchor = document.createElement('a');
@@ -571,7 +732,6 @@
         input.click();
     }
 
-    // 初始渲染
     render();
 </script>
 
